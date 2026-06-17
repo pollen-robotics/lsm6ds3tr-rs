@@ -41,9 +41,10 @@ fn main() {
     println!("gyro bias: [{bx:.3} {by:.3} {bz:.3}] °/s");
 
     let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
-    // Same gain as before while moving; only boost it once still so the estimate
-    // snaps back to gravity quickly instead of converging over several seconds.
-    ahrs.set_motion_adaptive(0.6, 0.15, 0.15);
+    // Same gain as before while moving; a brief gain boost when the device becomes
+    // still snaps the estimate back to gravity, then decays away so the steady-state
+    // output stays quiet. Args: beta_peak, decay_tau (s), accel_tol (g), gyro_tol (rad/s).
+    ahrs.set_motion_adaptive(0.6, 0.4, 0.15, 0.15);
 
     if stream {
         run_stream(ahrs, freq);

@@ -8,13 +8,19 @@ use embedded_hal::i2c::I2c;
 ///
 /// The Madgwick filter trusts the accelerometer as a gravity reference. That
 /// assumption only holds when the device isn't accelerating, so during fast
-/// motion (especially translation) the accelerometer is unreliable. This switches
-/// the gain based on whether the device is detected as still:
-/// - **moving** → low gain, lean on the gyro and ignore the disturbed accelerometer;
-/// - **still** → high gain, trust the accelerometer and snap back to true gravity fast.
+/// motion (especially translation) the accelerometer is unreliable.
+///
+/// While moving, the base `beta` is used. The moment the device becomes still,
+/// the gain jumps to `beta_peak` (snapping the estimate back to gravity quickly)
+/// and then **decays exponentially back to the base `beta`** with time constant
+/// `decay_tau` seconds. This gives a fast correction right after motion stops
+/// without the steady-state noise a permanently high gain would cause.
 #[derive(Debug, Clone, Copy)]
 struct AdaptiveBeta {
-    beta_still: f64,
+    /// Peak gain applied the instant the device becomes still.
+    beta_peak: f64,
+    /// Time constant (seconds) of the decay from `beta_peak` back to base `beta`.
+    decay_tau: f64,
     /// Stillness gate: accel magnitude must be within this many g of 1.0.
     accel_tol_g: f32,
     /// Stillness gate: gyro magnitude must be below this, in rad/s.
@@ -28,6 +34,8 @@ pub struct Lsm6ds3trAhrs<I2C> {
     /// Base gain, used while moving (or always, if adaptive is disabled).
     beta: f64,
     adaptive: Option<AdaptiveBeta>,
+    /// Seconds the device has been continuously still (drives the gain decay).
+    time_still: f64,
 }
 
 impl<I2C: I2c> Lsm6ds3trAhrs<I2C> {
@@ -41,22 +49,33 @@ impl<I2C: I2c> Lsm6ds3trAhrs<I2C> {
             filter: Madgwick::new(1.0 / 104.0, beta),
             beta,
             adaptive: None,
+            time_still: 0.0,
         }
     }
 
     /// Enable motion-adaptive gain.
     ///
-    /// While the device is moving, the base `beta` (from [`new`](Self::new)) is
-    /// used. Once it is detected as still — accelerometer magnitude within
-    /// `accel_tol_g` of 1 g **and** gyroscope magnitude below `gyro_tol_rad_s` —
-    /// the higher `beta_still` is used so the estimate snaps back to the gravity
-    /// reference quickly instead of converging over several seconds.
+    /// While moving, the base `beta` (from [`new`](Self::new)) is used. The moment
+    /// the device becomes still — accelerometer magnitude within `accel_tol_g` of
+    /// 1 g **and** gyroscope magnitude below `gyro_tol_rad_s` — the gain jumps to
+    /// `beta_peak` to snap the estimate back to gravity, then decays exponentially
+    /// back to the base `beta` over `decay_tau` seconds. This gives fast
+    /// reconvergence after motion *without* the steady-state noise a permanently
+    /// high gain would cause.
     ///
-    /// Reasonable starting values: `beta_still = 0.5`, `accel_tol_g = 0.1`,
-    /// `gyro_tol_rad_s = 0.1` (≈ 5.7 °/s), with a base `beta` around `0.05`.
-    pub fn set_motion_adaptive(&mut self, beta_still: f64, accel_tol_g: f32, gyro_tol_rad_s: f32) {
+    /// Reasonable starting values: `beta_peak = 0.6`, `decay_tau = 0.4`,
+    /// `accel_tol_g = 0.15`, `gyro_tol_rad_s = 0.15` (≈ 8.6 °/s), with a base
+    /// `beta` around `0.1`.
+    pub fn set_motion_adaptive(
+        &mut self,
+        beta_peak: f64,
+        decay_tau: f64,
+        accel_tol_g: f32,
+        gyro_tol_rad_s: f32,
+    ) {
         self.adaptive = Some(AdaptiveBeta {
-            beta_still,
+            beta_peak,
+            decay_tau,
             accel_tol_g,
             gyro_tol_rad_s,
         });
@@ -79,15 +98,19 @@ impl<I2C: I2c> Lsm6ds3trAhrs<I2C> {
         let (ax, ay, az) = self.imu.read_accelerometer()?;
         let (gx, gy, gz) = self.imu.read_gyroscope()?;
 
-        // Pick the gain: snap back fast when still, trust the gyro while moving.
+        // Pick the gain: while still, boost to beta_peak then decay back to the
+        // base beta; while moving, just use the base beta.
         let beta = match self.adaptive {
             Some(a) => {
                 let accel_mag = (ax * ax + ay * ay + az * az).sqrt();
                 let gyro_mag = (gx * gx + gy * gy + gz * gz).sqrt();
                 let still = (accel_mag - 1.0).abs() < a.accel_tol_g && gyro_mag < a.gyro_tol_rad_s;
                 if still {
-                    a.beta_still
+                    self.time_still += dt as f64;
+                    // Decay from beta_peak toward the base beta as stillness persists.
+                    self.beta + (a.beta_peak - self.beta) * (-self.time_still / a.decay_tau).exp()
                 } else {
+                    self.time_still = 0.0;
                     self.beta
                 }
             }

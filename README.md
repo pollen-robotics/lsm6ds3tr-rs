@@ -51,10 +51,14 @@ Enable **motion-adaptive gain** to fix this — trust the gyro while moving, the
 
 ```rust
 let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);    // normal base gain while moving
-ahrs.set_motion_adaptive(0.6, 0.15, 0.15);      // beta_still, accel_tol (g), gyro_tol (rad/s)
+ahrs.set_motion_adaptive(0.6, 0.4, 0.15, 0.15); // beta_peak, decay_tau (s), accel_tol (g), gyro_tol (rad/s)
 ```
 
-Keep the base `beta` at the value that already behaves well while moving (e.g. `0.1`) — the adaptive logic only *raises* the gain once still, so it never makes moving behavior worse. The device is considered "still" when the accelerometer magnitude is within `accel_tol` of 1 g **and** the gyroscope magnitude is below `gyro_tol`; if your platform vibrates (e.g. motors running), loosen those tolerances so "still" is actually detected. Both examples enable this by default.
+While moving, the base `beta` is used. The instant the device becomes still the gain jumps to `beta_peak` (snapping the estimate back to gravity), then **decays back to the base `beta` over `decay_tau` seconds** — so reconvergence is fast but the steady-state output stays as quiet as the base gain. Keep the base `beta` at the value that already behaves well while moving (e.g. `0.1`); the boost never makes moving behavior worse.
+
+The device is considered "still" when the accelerometer magnitude is within `accel_tol` of 1 g **and** the gyroscope magnitude is below `gyro_tol`; if your platform vibrates (e.g. motors running), loosen those tolerances so "still" is actually detected. Both examples enable this by default.
+
+Tuning: more steady-state noise than you like → lower `beta_peak` or shorten `decay_tau`; too slow to reconverge → raise `beta_peak` or lengthen `decay_tau`.
 
 ## Examples
 
