@@ -24,8 +24,11 @@ use embedded_hal::i2c::I2c;
 // Default 7-bit I2C address (SDO/SA0 low). With SA0 tied high it becomes 0x6B.
 pub const DEFAULT_ADDRESS: u8 = 0x6A;
 
-// Expected WHO_AM_I value for the LSM6DS3TR-C.
-const WHO_AM_I_VALUE: u8 = 0x6A;
+// Accepted WHO_AM_I values. The LSM6DS3TR-C reports 0x6A; the closely related
+// LSM6DS3 / LSM6DS3-H report 0x69. All three share the same register map, so
+// this driver works against any of them.
+const WHO_AM_I_LSM6DS3TR_C: u8 = 0x6A;
+const WHO_AM_I_LSM6DS3: u8 = 0x69;
 
 // Registers
 const REG_WHO_AM_I: u8 = 0x0F;
@@ -266,7 +269,7 @@ impl<I2C: I2c> Lsm6ds3tr<I2C> {
         // Verify identity before touching control registers.
         let mut id = [0u8; 1];
         i2c.write_read(address, &[REG_WHO_AM_I], &mut id)?;
-        if id[0] != WHO_AM_I_VALUE {
+        if id[0] != WHO_AM_I_LSM6DS3TR_C && id[0] != WHO_AM_I_LSM6DS3 {
             return Err(Error::WrongId(id[0]));
         }
 

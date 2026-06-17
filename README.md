@@ -23,7 +23,9 @@ let temp         = ahrs.imu().read_temperature()?;     // °C
 let [w, x, y, z] = ahrs.get_quaternion(dt)?;
 ```
 
-`new` uses the default I2C address `0x6A` (SDO/SA0 low). Use `Lsm6ds3tr::new_with_address(i2c, config, 0x6B)` when SA0 is tied high. Construction reads `WHO_AM_I` and returns `Error::WrongId` if it isn't an LSM6DS3TR-C.
+`new` uses the default I2C address `0x6A` (SDO/SA0 low). Use `Lsm6ds3tr::new_with_address(i2c, config, 0x6B)` when SA0 is tied high. Construction reads `WHO_AM_I` and returns `Error::WrongId` if it doesn't match a known device.
+
+The accepted `WHO_AM_I` values are `0x6A` (LSM6DS3TR-C) and `0x69` (LSM6DS3 / LSM6DS3-H). These parts share the same register map, so the driver works against any of them.
 
 `Config` defaults to ±4 g / 104 Hz accelerometer and ±500 °/s / 104 Hz gyroscope. All ranges and output data rates are configurable via `AccRange`, `GyroRange`, and `Odr`.
 
@@ -31,7 +33,7 @@ The Madgwick `beta` parameter controls convergence speed vs. noise. `0.1` is a g
 
 ## Examples
 
-Both examples target `/dev/i2c-4` at 50 Hz by default.
+Both examples target `/dev/i2c-1`, address `0x6B`, at 50 Hz by default. Override with `--bus`, `--addr` (hex, e.g. `0x6a`), and `--freq`.
 
 ### read_imu
 
@@ -40,7 +42,7 @@ Print quaternion and temperature in a loop, or stream data over TCP for visualiz
 ```sh
 # Print mode
 cargo run --example read_imu
-cargo run --example read_imu -- --bus /dev/i2c-1 --freq 100
+cargo run --example read_imu -- --bus /dev/i2c-1 --addr 0x6b --freq 100
 
 # Stream mode (see Visualization below)
 cargo run --example read_imu -- --stream

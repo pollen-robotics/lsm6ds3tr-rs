@@ -11,15 +11,24 @@ fn main() {
     let bus = args.iter().position(|a| a == "--bus")
         .and_then(|i| args.get(i + 1))
         .map(|s| s.clone())
-        .unwrap_or_else(|| "/dev/i2c-4".to_string());
+        .unwrap_or_else(|| "/dev/i2c-1".to_string());
 
     let freq: f64 = args.iter().position(|a| a == "--freq")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(50.0);
 
+    // I2C address: 0x6A (SA0 low, default) or 0x6B (SA0 high). Accepts hex (0x6b) or decimal.
+    let addr: u8 = args.iter().position(|a| a == "--addr")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| {
+            let s = s.trim_start_matches("0x").trim_start_matches("0X");
+            u8::from_str_radix(s, 16).expect("invalid --addr")
+        })
+        .unwrap_or(0x6B);
+
     let i2c = I2cdev::new(&bus).unwrap_or_else(|e| panic!("failed to open {bus}: {e}"));
-    let imu = Lsm6ds3tr::new(i2c, Config::default())
+    let imu = Lsm6ds3tr::new_with_address(i2c, Config::default(), addr)
         .unwrap_or_else(|e| panic!("LSM6DS3TR-C init failed: {e:?}"));
     let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
 
