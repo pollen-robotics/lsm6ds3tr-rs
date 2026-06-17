@@ -1,0 +1,16 @@
+[package]
+name = "lsm6ds3tr"
+version = "0.1.0"
+edition = "2021"
+description = "Driver for the ST LSM6DS3TR-C 6-axis IMU (accelerometer + gyroscope) with Madgwick filter"
+
+[dependencies]
+embedded-hal = "1.0"
+ahrs     = { version = "0.8.0", features = ["std"] }
+nalgebra = "0.34.1"
+
+[dev-dependencies]
+cpu-time = "1.0.0"
+linux-embedded-hal = "0.4"
+serde = { version = "1.0.228", features = ["derive"] }
+serde-pickle = "1.2.0"

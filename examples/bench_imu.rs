@@ -1,0 +1,85 @@
+use cpu_time::ProcessTime;
+use linux_embedded_hal::I2cdev;
+use lsm6ds3tr::{Config, Lsm6ds3tr, Lsm6ds3trAhrs};
+use std::time::{Duration, Instant};
+
+const RUN_SECS: u64 = 10;
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    let bus = args.iter().position(|a| a == "--bus")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.clone())
+        .unwrap_or_else(|| "/dev/i2c-4".to_string());
+
+    let freq: f64 = args.iter().position(|a| a == "--freq")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50.0);
+
+    let i2c = I2cdev::new(&bus).unwrap_or_else(|e| panic!("failed to open {bus}: {e}"));
+    let imu = Lsm6ds3tr::new(i2c, Config::default())
+        .unwrap_or_else(|e| panic!("LSM6DS3TR-C init failed: {e:?}"));
+    let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
+
+    let target = Duration::from_secs_f64(1.0 / freq);
+    let run_for = Duration::from_secs(RUN_SECS);
+    let mut intervals: Vec<f64> = Vec::with_capacity((freq * RUN_SECS as f64) as usize);
+
+    println!("Warming up...");
+    for _ in 0..10 {
+        let _ = ahrs.get_quaternion(1.0 / freq as f32).expect("read failed");
+        std::thread::sleep(target);
+    }
+
+    println!("Benchmarking at {freq} Hz for {RUN_SECS}s...");
+
+    let wall_start = Instant::now();
+    let cpu_start = ProcessTime::now();
+    let mut last = Instant::now();
+    let mut next_tick = last + target;
+
+    while wall_start.elapsed() < run_for {
+        let now = Instant::now();
+        let dt = now.duration_since(last).as_secs_f32();
+        intervals.push(now.duration_since(last).as_secs_f64() * 1000.0);
+        last = now;
+
+        let _ = ahrs.get_quaternion(dt).expect("read failed");
+
+        next_tick += target;
+        let now = Instant::now();
+        if now < next_tick {
+            std::thread::sleep(next_tick - now);
+        }
+    }
+
+    let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
+    let cpu_ms = cpu_start.elapsed().as_secs_f64() * 1000.0;
+
+    // Drop first sample (warmup boundary)
+    let intervals = &intervals[1..];
+    let n = intervals.len();
+
+    let mean = intervals.iter().sum::<f64>() / n as f64;
+    let std_dev = (intervals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+    let min = intervals.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = intervals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    let mut sorted = intervals.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p95 = sorted[(0.95 * n as f64) as usize];
+    let p99 = sorted[(0.99 * n as f64) as usize];
+
+    println!();
+    println!("=== results ({n} samples) ===");
+    println!("  rate     {:6.2} Hz  (target {freq:.0} Hz)", 1000.0 / mean);
+    println!("  mean     {:6.3} ms  (target {:.3} ms)", mean, 1000.0 / freq);
+    println!("  std dev  {:6.3} ms", std_dev);
+    println!("  min      {:6.3} ms", min);
+    println!("  p95      {:6.3} ms", p95);
+    println!("  p99      {:6.3} ms", p99);
+    println!("  max      {:6.3} ms", max);
+    println!("  cpu      {:5.1} %   ({:.1} ms cpu / {:.1} ms wall)", cpu_ms / wall_ms * 100.0, cpu_ms, wall_ms);
+}
