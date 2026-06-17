@@ -43,6 +43,19 @@ let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
 
 Both examples do this automatically on startup. Note this reduces but cannot fully eliminate yaw drift — absolute heading requires a magnetometer.
 
+### Slow reconvergence after fast motion
+
+The Madgwick filter treats the accelerometer as a gravity reference, which only holds when the device isn't accelerating. During fast motion (especially translation) the accelerometer also senses linear acceleration, so roll/pitch get pulled off; with a low `beta` the estimate then takes several seconds to drift back once the device is still.
+
+Enable **motion-adaptive gain** to fix this — trust the gyro while moving, then snap back to gravity quickly once still:
+
+```rust
+let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.05);   // low base gain while moving
+ahrs.set_motion_adaptive(0.5, 0.1, 0.1);        // beta_still, accel_tol (g), gyro_tol (rad/s)
+```
+
+The device is considered "still" when the accelerometer magnitude is within `accel_tol` of 1 g **and** the gyroscope magnitude is below `gyro_tol`. Both examples enable this by default.
+
 ## Examples
 
 Both examples target `/dev/i2c-1`, address `0x6B`, at 50 Hz by default. Override with `--bus`, `--addr` (hex, e.g. `0x6a`), and `--freq`.

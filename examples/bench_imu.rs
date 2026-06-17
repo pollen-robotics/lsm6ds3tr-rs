@@ -34,7 +34,8 @@ fn main() {
     println!("Calibrating gyro — keep the IMU still...");
     imu.calibrate_gyro(500).expect("gyro calibration failed");
 
-    let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
+    let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.05);
+    ahrs.set_motion_adaptive(0.5, 0.1, 0.1);
 
     let target = Duration::from_secs_f64(1.0 / freq);
     let run_for = Duration::from_secs(RUN_SECS);
