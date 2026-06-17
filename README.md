@@ -50,11 +50,11 @@ The Madgwick filter treats the accelerometer as a gravity reference, which only 
 Enable **motion-adaptive gain** to fix this — trust the gyro while moving, then snap back to gravity quickly once still:
 
 ```rust
-let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.05);   // low base gain while moving
-ahrs.set_motion_adaptive(0.5, 0.1, 0.1);        // beta_still, accel_tol (g), gyro_tol (rad/s)
+let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);    // normal base gain while moving
+ahrs.set_motion_adaptive(0.6, 0.15, 0.15);      // beta_still, accel_tol (g), gyro_tol (rad/s)
 ```
 
-The device is considered "still" when the accelerometer magnitude is within `accel_tol` of 1 g **and** the gyroscope magnitude is below `gyro_tol`. Both examples enable this by default.
+Keep the base `beta` at the value that already behaves well while moving (e.g. `0.1`) — the adaptive logic only *raises* the gain once still, so it never makes moving behavior worse. The device is considered "still" when the accelerometer magnitude is within `accel_tol` of 1 g **and** the gyroscope magnitude is below `gyro_tol`; if your platform vibrates (e.g. motors running), loosen those tolerances so "still" is actually detected. Both examples enable this by default.
 
 ## Examples
 

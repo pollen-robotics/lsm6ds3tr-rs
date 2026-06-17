@@ -40,9 +40,10 @@ fn main() {
     let (bx, by, bz) = imu.gyro_bias_dps();
     println!("gyro bias: [{bx:.3} {by:.3} {bz:.3}] °/s");
 
-    let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.05);
-    // Trust the gyro during motion, snap back to gravity quickly once still.
-    ahrs.set_motion_adaptive(0.5, 0.1, 0.1);
+    let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
+    // Same gain as before while moving; only boost it once still so the estimate
+    // snaps back to gravity quickly instead of converging over several seconds.
+    ahrs.set_motion_adaptive(0.6, 0.15, 0.15);
 
     if stream {
         run_stream(ahrs, freq);
