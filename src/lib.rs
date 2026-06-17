@@ -251,6 +251,9 @@ pub struct Lsm6ds3tr<I2C> {
     gyro_range: GyroRange,
     /// Software axis remapping applied to all accelerometer and gyroscope readings.
     axis_remap: AxisRemap,
+    /// Gyroscope zero-rate bias in °/s, in the raw sensor frame (before remap).
+    /// Subtracted from every gyroscope reading. Set via [`Lsm6ds3tr::calibrate_gyro`].
+    gyro_bias_dps: (f32, f32, f32),
 }
 
 impl<I2C: I2c> Lsm6ds3tr<I2C> {
@@ -295,6 +298,7 @@ impl<I2C: I2c> Lsm6ds3tr<I2C> {
             acc_range: config.acc_range,
             gyro_range: config.gyro_range,
             axis_remap: AxisRemap::default(),
+            gyro_bias_dps: (0.0, 0.0, 0.0),
         })
     }
 
@@ -336,10 +340,49 @@ impl<I2C: I2c> Lsm6ds3tr<I2C> {
         self.i2c.write_read(self.address, &[REG_OUTX_L_G], &mut buf)?;
 
         let scale = self.gyro_range.mdps_per_lsb() / 1000.0; // dps per LSB
-        let x = i16::from_le_bytes([buf[0], buf[1]]) as f32 * scale;
-        let y = i16::from_le_bytes([buf[2], buf[3]]) as f32 * scale;
-        let z = i16::from_le_bytes([buf[4], buf[5]]) as f32 * scale;
+        // Subtract the zero-rate bias in the raw sensor frame, then remap.
+        let x = i16::from_le_bytes([buf[0], buf[1]]) as f32 * scale - self.gyro_bias_dps.0;
+        let y = i16::from_le_bytes([buf[2], buf[3]]) as f32 * scale - self.gyro_bias_dps.1;
+        let z = i16::from_le_bytes([buf[4], buf[5]]) as f32 * scale - self.gyro_bias_dps.2;
         Ok(self.axis_remap.apply((x, y, z)))
+    }
+
+    /// Measure and store the gyroscope zero-rate bias.
+    ///
+    /// **The device must be held completely still during this call.** It reads
+    /// `samples` gyroscope measurements, averages them, and stores the result as
+    /// a bias that is subtracted from all subsequent gyroscope readings. This is
+    /// the main remedy for yaw drift on a 6-axis IMU, where the gyro Z bias has
+    /// no gravity/magnetometer reference to correct it.
+    ///
+    /// The bias is captured in the raw sensor frame, so it is correct regardless
+    /// of any [`AxisRemap`] configured before or after calibration.
+    pub fn calibrate_gyro(&mut self, samples: u32) -> Result<(), Error<I2C::Error>> {
+        if samples == 0 {
+            return Ok(());
+        }
+        // Read without the current bias applied.
+        self.gyro_bias_dps = (0.0, 0.0, 0.0);
+        let saved_remap = self.axis_remap;
+        self.axis_remap = AxisRemap::default();
+
+        let mut sum = (0.0f32, 0.0f32, 0.0f32);
+        for _ in 0..samples {
+            let (x, y, z) = self.read_gyroscope_dps()?;
+            sum.0 += x;
+            sum.1 += y;
+            sum.2 += z;
+        }
+
+        let n = samples as f32;
+        self.gyro_bias_dps = (sum.0 / n, sum.1 / n, sum.2 / n);
+        self.axis_remap = saved_remap;
+        Ok(())
+    }
+
+    /// Current gyroscope zero-rate bias in °/s (raw sensor frame).
+    pub fn gyro_bias_dps(&self) -> (f32, f32, f32) {
+        self.gyro_bias_dps
     }
 
     /// Read temperature. Returns value in **°C**.

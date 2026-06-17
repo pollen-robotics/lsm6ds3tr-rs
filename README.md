@@ -31,6 +31,18 @@ The accepted `WHO_AM_I` values are `0x6A` (LSM6DS3TR-C) and `0x69` (LSM6DS3 / LS
 
 The Madgwick `beta` parameter controls convergence speed vs. noise. `0.1` is a good starting point.
 
+### Yaw drift and gyro calibration
+
+This is a 6-axis IMU (no magnetometer). Roll and pitch are corrected against gravity by the Madgwick filter, but **yaw has no absolute reference**, so it slowly drifts as the gyro's zero-rate bias integrates over time. To minimise it, measure and subtract that bias once at startup while the device is held still:
+
+```rust
+let mut imu = Lsm6ds3tr::new(i2c, Config::default())?;
+imu.calibrate_gyro(500)?;   // keep the IMU still during this call
+let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
+```
+
+Both examples do this automatically on startup. Note this reduces but cannot fully eliminate yaw drift — absolute heading requires a magnetometer.
+
 ## Examples
 
 Both examples target `/dev/i2c-1`, address `0x6B`, at 50 Hz by default. Override with `--bus`, `--addr` (hex, e.g. `0x6a`), and `--freq`.

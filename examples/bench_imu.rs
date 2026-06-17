@@ -28,8 +28,12 @@ fn main() {
         .unwrap_or(0x6B);
 
     let i2c = I2cdev::new(&bus).unwrap_or_else(|e| panic!("failed to open {bus}: {e}"));
-    let imu = Lsm6ds3tr::new_with_address(i2c, Config::default(), addr)
+    let mut imu = Lsm6ds3tr::new_with_address(i2c, Config::default(), addr)
         .unwrap_or_else(|e| panic!("LSM6DS3TR-C init failed: {e:?}"));
+
+    println!("Calibrating gyro — keep the IMU still...");
+    imu.calibrate_gyro(500).expect("gyro calibration failed");
+
     let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
 
     let target = Duration::from_secs_f64(1.0 / freq);

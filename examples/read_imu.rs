@@ -32,8 +32,14 @@ fn main() {
     let stream = args.contains(&"--stream".to_string());
 
     let i2c = I2cdev::new(&bus).unwrap_or_else(|e| panic!("failed to open {bus}: {e}"));
-    let imu = Lsm6ds3tr::new_with_address(i2c, Config::default(), addr)
+    let mut imu = Lsm6ds3tr::new_with_address(i2c, Config::default(), addr)
         .unwrap_or_else(|e| panic!("failed to initialise LSM6DS3TR-C on {bus} @ {addr:#x}: {e:?}"));
+
+    println!("Calibrating gyro — keep the IMU still...");
+    imu.calibrate_gyro(500).expect("gyro calibration failed");
+    let (bx, by, bz) = imu.gyro_bias_dps();
+    println!("gyro bias: [{bx:.3} {by:.3} {bz:.3}] °/s");
+
     let ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
 
     if stream {
