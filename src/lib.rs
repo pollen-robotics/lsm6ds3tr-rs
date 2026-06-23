@@ -17,7 +17,7 @@
 //! ```
 
 mod fusion;
-pub use fusion::Lsm6ds3trAhrs;
+pub use fusion::{Lsm6ds3trAhrs, MadgwickAhrs};
 
 use embedded_hal::i2c::I2c;
 
@@ -73,7 +73,7 @@ impl AccRange {
     }
 
     /// Sensitivity in mg/LSB (datasheet mechanical characteristics).
-    fn mg_per_lsb(self) -> f32 {
+    pub fn mg_per_lsb(self) -> f32 {
         match self {
             AccRange::G2 => 0.061,
             AccRange::G4 => 0.122,
@@ -113,7 +113,7 @@ impl GyroRange {
     }
 
     /// Sensitivity in mdps/LSB (datasheet mechanical characteristics).
-    fn mdps_per_lsb(self) -> f32 {
+    pub fn mdps_per_lsb(self) -> f32 {
         match self {
             GyroRange::Dps125 => 4.375,
             GyroRange::Dps250 => 8.75,
@@ -241,6 +241,84 @@ impl AxisRemap {
     }
 }
 
+// ── Transport-free decoder ────────────────────────────────────────────────────
+
+/// A decoded IMU sample in physical units (after axis remap + gyro-bias).
+#[derive(Debug, Clone, Copy)]
+pub struct ImuSample {
+    /// Gyroscope `[x, y, z]` in **rad/s**.
+    pub gyro_rads: [f32; 3],
+    /// Accelerometer `[x, y, z]` in **g**.
+    pub accel_g: [f32; 3],
+}
+
+/// Turns raw output-register bytes into physical, remapped, bias-corrected
+/// samples — using the exact same math as [`Lsm6ds3tr`], but with **no I2C and
+/// no transport**.
+///
+/// Use this when the raw registers arrive from somewhere other than this
+/// driver's own I2C bus (e.g. relayed over a Dynamixel bus). Pair it with
+/// [`MadgwickAhrs`] to reproduce the on-chip [`Lsm6ds3trAhrs`] pipeline byte for
+/// byte.
+#[derive(Debug, Clone, Copy)]
+pub struct SampleDecoder {
+    pub acc_range: AccRange,
+    pub gyro_range: GyroRange,
+    /// Software axis remap applied to every reading.
+    pub axis_remap: AxisRemap,
+    /// Gyro zero-rate bias in °/s (raw sensor frame), subtracted before remap.
+    pub gyro_bias_dps: (f32, f32, f32),
+}
+
+impl SampleDecoder {
+    /// Decoder with identity remap and zero bias for the given ranges.
+    pub fn new(acc_range: AccRange, gyro_range: GyroRange) -> Self {
+        Self {
+            acc_range,
+            gyro_range,
+            axis_remap: AxisRemap::default(),
+            gyro_bias_dps: (0.0, 0.0, 0.0),
+        }
+    }
+
+    /// Decode 6 accelerometer bytes `[xl,xh,yl,yh,zl,zh]` → `(x,y,z)` in g.
+    pub fn decode_accelerometer(&self, b: &[u8; 6]) -> (f32, f32, f32) {
+        let scale = self.acc_range.mg_per_lsb() / 1000.0; // g per LSB
+        let x = i16::from_le_bytes([b[0], b[1]]) as f32 * scale;
+        let y = i16::from_le_bytes([b[2], b[3]]) as f32 * scale;
+        let z = i16::from_le_bytes([b[4], b[5]]) as f32 * scale;
+        self.axis_remap.apply((x, y, z))
+    }
+
+    /// Decode 6 gyroscope bytes `[xl,xh,yl,yh,zl,zh]` → `(x,y,z)` in °/s.
+    pub fn decode_gyroscope_dps(&self, b: &[u8; 6]) -> (f32, f32, f32) {
+        let scale = self.gyro_range.mdps_per_lsb() / 1000.0; // dps per LSB
+        let x = i16::from_le_bytes([b[0], b[1]]) as f32 * scale - self.gyro_bias_dps.0;
+        let y = i16::from_le_bytes([b[2], b[3]]) as f32 * scale - self.gyro_bias_dps.1;
+        let z = i16::from_le_bytes([b[4], b[5]]) as f32 * scale - self.gyro_bias_dps.2;
+        self.axis_remap.apply((x, y, z))
+    }
+
+    /// Decode 6 gyroscope bytes → `(x,y,z)` in rad/s.
+    pub fn decode_gyroscope(&self, b: &[u8; 6]) -> (f32, f32, f32) {
+        let (x, y, z) = self.decode_gyroscope_dps(b);
+        let r = core::f32::consts::PI / 180.0;
+        (x * r, y * r, z * r)
+    }
+
+    /// Decode a 12-byte block ordered **gyro X..Z then accel X..Z** — i.e. the
+    /// LSM6DS3TR-C output-register order (`OUTX_L_G..OUTZ_H_XL`, 0x22..0x2D), the
+    /// natural layout of a single burst read. Returns gyro in rad/s, accel in g.
+    pub fn decode_block(&self, b: &[u8; 12]) -> ImuSample {
+        let g = self.decode_gyroscope(&[b[0], b[1], b[2], b[3], b[4], b[5]]);
+        let a = self.decode_accelerometer(&[b[6], b[7], b[8], b[9], b[10], b[11]]);
+        ImuSample {
+            gyro_rads: [g.0, g.1, g.2],
+            accel_g: [a.0, a.1, a.2],
+        }
+    }
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 
 /// LSM6DS3TR-C driver.
@@ -309,16 +387,23 @@ impl<I2C: I2c> Lsm6ds3tr<I2C> {
         self.axis_remap = remap;
     }
 
+    /// Snapshot this driver's ranges, remap and gyro bias as a transport-free
+    /// [`SampleDecoder`] — decode raw registers obtained over any transport with
+    /// exactly the math this driver uses.
+    pub fn decoder(&self) -> SampleDecoder {
+        SampleDecoder {
+            acc_range: self.acc_range,
+            gyro_range: self.gyro_range,
+            axis_remap: self.axis_remap,
+            gyro_bias_dps: self.gyro_bias_dps,
+        }
+    }
+
     /// Read accelerometer. Returns `(x, y, z)` in **g** (after axis remapping).
     pub fn read_accelerometer(&mut self) -> Result<(f32, f32, f32), Error<I2C::Error>> {
         let mut buf = [0u8; 6];
         self.i2c.write_read(self.address, &[REG_OUTX_L_XL], &mut buf)?;
-
-        let scale = self.acc_range.mg_per_lsb() / 1000.0; // g per LSB
-        let x = i16::from_le_bytes([buf[0], buf[1]]) as f32 * scale;
-        let y = i16::from_le_bytes([buf[2], buf[3]]) as f32 * scale;
-        let z = i16::from_le_bytes([buf[4], buf[5]]) as f32 * scale;
-        Ok(self.axis_remap.apply((x, y, z)))
+        Ok(self.decoder().decode_accelerometer(&buf))
     }
 
     /// Read accelerometer. Returns `(x, y, z)` in **m/s²** (after axis remapping).
@@ -338,13 +423,7 @@ impl<I2C: I2c> Lsm6ds3tr<I2C> {
     pub fn read_gyroscope_dps(&mut self) -> Result<(f32, f32, f32), Error<I2C::Error>> {
         let mut buf = [0u8; 6];
         self.i2c.write_read(self.address, &[REG_OUTX_L_G], &mut buf)?;
-
-        let scale = self.gyro_range.mdps_per_lsb() / 1000.0; // dps per LSB
-        // Subtract the zero-rate bias in the raw sensor frame, then remap.
-        let x = i16::from_le_bytes([buf[0], buf[1]]) as f32 * scale - self.gyro_bias_dps.0;
-        let y = i16::from_le_bytes([buf[2], buf[3]]) as f32 * scale - self.gyro_bias_dps.1;
-        let z = i16::from_le_bytes([buf[4], buf[5]]) as f32 * scale - self.gyro_bias_dps.2;
-        Ok(self.axis_remap.apply((x, y, z)))
+        Ok(self.decoder().decode_gyroscope_dps(&buf))
     }
 
     /// Measure and store the gyroscope zero-rate bias.
