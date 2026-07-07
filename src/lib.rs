@@ -480,3 +480,47 @@ impl<I2C: I2c> Lsm6ds3tr<I2C> {
         self.i2c
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn le(v: i16) -> [u8; 2] {
+        v.to_le_bytes()
+    }
+
+    #[test]
+    fn decode_block_scales_and_orders_correctly() {
+        // Default ranges: ±4 g (0.122 mg/LSB), ±500 °/s (17.5 mdps/LSB).
+        let dec = SampleDecoder::new(AccRange::G4, GyroRange::Dps500);
+
+        let gx = (100.0 / 0.0175) as i16; // ~100 °/s on X
+        let az = (1.0 / 0.000122) as i16; // ~1 g on Z
+        let mut b = [0u8; 12];
+        b[0..2].copy_from_slice(&le(gx)); // gyro X (block is gyro first)
+        b[10..12].copy_from_slice(&le(az)); // accel Z (bytes 6..11 are accel)
+
+        let s = dec.decode_block(&b);
+        // gyro X ≈ 100 °/s in rad/s
+        assert!((s.gyro_rads[0] - 100.0 * core::f32::consts::PI / 180.0).abs() < 0.01);
+        assert!(s.gyro_rads[1].abs() < 1e-3 && s.gyro_rads[2].abs() < 1e-3);
+        // accel = gravity on +Z
+        assert!(s.accel_g[0].abs() < 1e-3 && s.accel_g[1].abs() < 1e-3);
+        assert!((s.accel_g[2] - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn decoder_matches_axis_remap_and_bias() {
+        let mut dec = SampleDecoder::new(AccRange::G4, GyroRange::Dps500);
+        // Invert X and Y (the microduck on-board convention).
+        dec.axis_remap = AxisRemap { axes: [0, 1, 2], signs: [-1.0, -1.0, 1.0] };
+
+        let g = (200.0_f32 / 0.0175) as i16; // 200 °/s on X and Y
+        let mut b = [0u8; 12];
+        b[0..2].copy_from_slice(&le(g));
+        b[2..4].copy_from_slice(&le(g));
+        let s = dec.decode_block(&b);
+        // X and Y signs flipped by the remap.
+        assert!(s.gyro_rads[0] < 0.0 && s.gyro_rads[1] < 0.0);
+    }
+}
