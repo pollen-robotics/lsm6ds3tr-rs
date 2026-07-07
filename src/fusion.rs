@@ -105,6 +105,30 @@ impl MadgwickAhrs {
         self.adaptive = None;
     }
 
+    /// Reset the orientation directly from one accelerometer sample (in g),
+    /// assumed to be pure gravity — i.e. the device is still. Sets the tilt
+    /// exactly (yaw = 0), so the filter starts CONVERGED instead of slewing
+    /// from identity at beta-rate. Call once at startup with the first clean
+    /// sample (|a| ≈ 1 g); essential with a low base beta, where convergence
+    /// from identity would otherwise take tens of seconds.
+    pub fn reset_orientation_from_accel(&mut self, accel: [f32; 3]) {
+        let a = Vector3::new(accel[0] as f64, accel[1] as f64, accel[2] as f64);
+        if a.norm() < 1e-6 {
+            return;
+        }
+        // Want q (body→world) with q · a_norm = world up [0,0,1] — the same
+        // convention update_imu converges to (at rest the accel reads +1 g "up").
+        let q = nalgebra::UnitQuaternion::rotation_between(&a, &Vector3::z())
+            .unwrap_or_else(|| {
+                nalgebra::UnitQuaternion::from_axis_angle(
+                    &Vector3::x_axis(),
+                    core::f64::consts::PI,
+                )
+            });
+        self.filter = Madgwick::new_with_quat(1.0 / 104.0, self.beta, q);
+        self.time_still = 0.0;
+    }
+
     /// Update the filter with one sample and return `(gyro, quaternion)`.
     ///
     /// * `gyro` — `[gx, gy, gz]` in **rad/s** (already axis-remapped).
