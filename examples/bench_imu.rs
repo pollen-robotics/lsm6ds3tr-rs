@@ -35,7 +35,7 @@ fn main() {
     imu.calibrate_gyro(500).expect("gyro calibration failed");
 
     let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
-    ahrs.set_motion_adaptive(0.6, 0.4, 0.15, 0.15);
+    ahrs.set_motion_adaptive(0.6, 0.4, 0.15, 0.15, 0.4);
 
     let target = Duration::from_secs_f64(1.0 / freq);
     let run_for = Duration::from_secs(RUN_SECS);

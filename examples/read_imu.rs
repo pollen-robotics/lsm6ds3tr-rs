@@ -43,8 +43,9 @@ fn main() {
     let mut ahrs = Lsm6ds3trAhrs::new(imu, 0.1);
     // Same gain as before while moving; a brief gain boost when the device becomes
     // still snaps the estimate back to gravity, then decays away so the steady-state
-    // output stays quiet. Args: beta_peak, decay_tau (s), accel_tol (g), gyro_tol (rad/s).
-    ahrs.set_motion_adaptive(0.6, 0.4, 0.15, 0.15);
+    // output stays quiet. Args: beta_peak, decay_tau (s), accel_tol (g), gyro_tol (rad/s),
+    // still_min (s) — sustained stillness required before the boost engages.
+    ahrs.set_motion_adaptive(0.6, 0.4, 0.15, 0.15, 0.4);
 
     if stream {
         run_stream(ahrs, freq);
