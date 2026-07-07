@@ -10,14 +10,22 @@ use embedded_hal::i2c::I2c;
 /// assumption only holds when the device isn't accelerating, so during fast
 /// motion (especially translation) the accelerometer is unreliable.
 ///
-/// While moving, the base `beta` is used. The moment the device becomes still,
-/// the gain jumps to `beta_peak` (snapping the estimate back to gravity quickly)
-/// and then **decays exponentially back to the base `beta`** with time constant
-/// `decay_tau` seconds. This gives a fast correction right after motion stops
-/// without the steady-state noise a permanently high gain would cause.
+/// While moving, the base `beta` is used. Once the device has been continuously
+/// still for `still_min_s` seconds, the gain jumps to `beta_peak` (snapping the
+/// estimate back to gravity quickly) and then **decays exponentially back to
+/// the base `beta`** with time constant `decay_tau` seconds. This gives a fast
+/// correction after motion stops without the steady-state noise a permanently
+/// high gain would cause.
+///
+/// `still_min_s` exists because rhythmic motion (e.g. a walking robot's double-
+/// support phase) contains brief instants that pass the stillness gate; without
+/// a minimum still time each of those instants fires a `beta_peak` burst that
+/// yanks the estimate toward the motion-corrupted accelerometer — worse than a
+/// constant gain. Set it longer than any quiet gap inside the motion (0.3–0.5 s
+/// for walking); genuine standing exceeds it almost immediately.
 #[derive(Debug, Clone, Copy)]
 struct AdaptiveBeta {
-    /// Peak gain applied the instant the device becomes still.
+    /// Peak gain applied once the device has been still for `still_min_s`.
     beta_peak: f64,
     /// Time constant (seconds) of the decay from `beta_peak` back to base `beta`.
     decay_tau: f64,
@@ -25,6 +33,8 @@ struct AdaptiveBeta {
     accel_tol_g: f32,
     /// Stillness gate: gyro magnitude must be below this, in rad/s.
     gyro_tol_rad_s: f32,
+    /// Continuous stillness required before the gain boost engages (seconds).
+    still_min_s: f64,
 }
 
 /// Transport-agnostic Madgwick AHRS.
@@ -59,26 +69,34 @@ impl MadgwickAhrs {
 
     /// Enable motion-adaptive gain.
     ///
-    /// While moving, the base `beta` (from [`new`](Self::new)) is used. The moment
-    /// the device becomes still — accelerometer magnitude within `accel_tol_g` of
-    /// 1 g **and** gyroscope magnitude below `gyro_tol_rad_s` — the gain jumps to
-    /// `beta_peak` to snap the estimate back to gravity, then decays exponentially
-    /// back to the base `beta` over `decay_tau` seconds.
+    /// While moving, the base `beta` (from [`new`](Self::new)) is used. Once the
+    /// device has been continuously still — accelerometer magnitude within
+    /// `accel_tol_g` of 1 g **and** gyroscope magnitude below `gyro_tol_rad_s` —
+    /// for `still_min_s` seconds, the gain jumps to `beta_peak` to snap the
+    /// estimate back to gravity, then decays exponentially back to the base
+    /// `beta` over `decay_tau` seconds.
+    ///
+    /// `still_min_s` guards against rhythmic motion (walking gait) whose brief
+    /// quiet instants would otherwise fire spurious `beta_peak` bursts; use
+    /// 0.3–0.5 s for a walking robot, or 0.0 for the legacy instant behavior.
     ///
     /// Reasonable starting values: `beta_peak = 0.6`, `decay_tau = 0.4`,
-    /// `accel_tol_g = 0.15`, `gyro_tol_rad_s = 0.15`, base `beta` around `0.1`.
+    /// `accel_tol_g = 0.15`, `gyro_tol_rad_s = 0.15`, `still_min_s = 0.4`,
+    /// base `beta` around `0.1` (or lower for gyro-dominant tracking).
     pub fn set_motion_adaptive(
         &mut self,
         beta_peak: f64,
         decay_tau: f64,
         accel_tol_g: f32,
         gyro_tol_rad_s: f32,
+        still_min_s: f64,
     ) {
         self.adaptive = Some(AdaptiveBeta {
             beta_peak,
             decay_tau,
             accel_tol_g,
             gyro_tol_rad_s,
+            still_min_s,
         });
     }
 
@@ -109,7 +127,14 @@ impl MadgwickAhrs {
                 let still = (accel_mag - 1.0).abs() < a.accel_tol_g && gyro_mag < a.gyro_tol_rad_s;
                 if still {
                     self.time_still += dt as f64;
-                    self.beta + (a.beta_peak - self.beta) * (-self.time_still / a.decay_tau).exp()
+                    if self.time_still >= a.still_min_s {
+                        // Boost engages only after sustained stillness; the decay
+                        // clock starts at the moment the boost engages.
+                        let boost_t = self.time_still - a.still_min_s;
+                        self.beta + (a.beta_peak - self.beta) * (-boost_t / a.decay_tau).exp()
+                    } else {
+                        self.beta
+                    }
                 } else {
                     self.time_still = 0.0;
                     self.beta
@@ -163,9 +188,10 @@ impl<I2C: I2c> Lsm6ds3trAhrs<I2C> {
         decay_tau: f64,
         accel_tol_g: f32,
         gyro_tol_rad_s: f32,
+        still_min_s: f64,
     ) {
         self.ahrs
-            .set_motion_adaptive(beta_peak, decay_tau, accel_tol_g, gyro_tol_rad_s);
+            .set_motion_adaptive(beta_peak, decay_tau, accel_tol_g, gyro_tol_rad_s, still_min_s);
     }
 
     /// Disable motion-adaptive gain.
